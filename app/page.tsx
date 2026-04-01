@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
-const DATA_URL = 'https://sundubu-ai-context.vercel.app/data/delivery_orders.json';
+// const DATA_URL = 'https://sundubu-ai-context.vercel.app/data/delivery_orders.json';
+const DATA_URL = '/api/all';
 
 // ---------- ヘルパー ----------
 function yen(v: number) {
@@ -21,6 +22,8 @@ interface DailyRecord {
   sales: number;
   fee: number;
   net: number;
+  avg_7d?: number;
+  diff_prev?: number | null;
 }
 interface Order {
   item_name?: string;
@@ -154,6 +157,34 @@ function DiffLabel({ value }: { value: number | null }) {
   if (value === null) return null;
   if (value >= 0) return <span style={{ color: '#2a7a4b', fontSize: 12 }}> +{yen(value)}↑</span>;
   return <span style={{ color: '#c0392b', fontSize: 12 }}> {yen(value)}↓</span>;
+}
+
+// ---------- AlertBadge ----------
+function AlertBadge({ record }: { record: DailyRecord }) {
+  const badges: React.ReactNode[] = [];
+  if (record.diff_prev !== null && record.diff_prev !== undefined) {
+    if (record.diff_prev <= -0.20) {
+      badges.push(
+        <span key="drop" style={{ marginLeft: 6, background: '#fff0f0', color: '#c43d32', border: '1px solid #efc1bb', borderRadius: 6, padding: '2px 6px', fontSize: 11 }}>
+          🔴 急落 {Math.round(record.diff_prev * 100)}%
+        </span>
+      );
+    } else if (record.diff_prev >= 0.30) {
+      badges.push(
+        <span key="spike" style={{ marginLeft: 6, background: '#fffaf0', color: '#b6811d', border: '1px solid #ecd8a5', borderRadius: 6, padding: '2px 6px', fontSize: 11 }}>
+          🟡 急上昇 +{Math.round(record.diff_prev * 100)}%
+        </span>
+      );
+    }
+  }
+  if (record.avg_7d && record.sales < record.avg_7d * 0.80) {
+    badges.push(
+      <span key="below" style={{ marginLeft: 6, background: '#fff0f0', color: '#c43d32', border: '1px solid #efc1bb', borderRadius: 6, padding: '2px 6px', fontSize: 11 }}>
+        🔴 平均比 {Math.round((record.sales / record.avg_7d - 1) * 100)}%
+      </span>
+    );
+  }
+  return <>{badges}</>;
 }
 
 // ---------- メインコンポーネント ----------
@@ -337,11 +368,12 @@ export default function Dashboard() {
                   <div key={date} className="section" style={{ marginBottom: 12 }}>
                     <div style={{ fontWeight: 600, marginBottom: 8 }}>{date}</div>
                     {rows.map((r, j) => (
-                      <div key={j} style={{ display: 'flex', gap: 16, padding: '4px 0', fontSize: 13, color: '#666' }}>
+                      <div key={j} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '4px 0', fontSize: 13, color: '#666', flexWrap: 'wrap' }}>
                         <span style={{ width: 100 }}>{r.platform.toUpperCase()}</span>
                         <span>売上 {yen(r.sales)}</span>
                         <span>手数料 {yen(r.fee)}</span>
                         <span>利益 {yen(r.sales - r.fee)}</span>
+                        <AlertBadge record={r} />
                       </div>
                     ))}
                     <div style={{ display: 'flex', gap: 16, padding: '6px 0 0', fontSize: 13, borderTop: '1px solid #eee', marginTop: 4 }}>

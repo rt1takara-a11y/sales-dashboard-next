@@ -1,0 +1,18 @@
+{
+  "records": [
+    { "date": "2026-03-18", "store": "nakameguro", "platform": "uber",      "orders": 8,  "sales": 24000, "fee": 7200,  "net": 16800, "avg_7d": 32771, "diff_prev": null },
+    { "date": "2026-03-18", "store": "nakameguro", "platform": "rocketnow", "orders": 3,  "sales": 9000,  "fee": 3150,  "net": 5850,  "avg_7d": 17571, "diff_prev": null },
+    { "date": "2026-03-19", "store": "nakameguro", "platform": "uber",      "orders": 10, "sales": 30000, "fee": 9000,  "net": 21000, "avg_7d": 32771, "diff_prev": 0.25 },
+    { "date": "2026-03-19", "store": "nakameguro", "platform": "rocketnow", "orders": 5,  "sales": 15000, "fee": 5250,  "net": 9750,  "avg_7d": 17571, "diff_prev": 0.67 },
+    { "date": "2026-03-20", "store": "nakameguro", "platform": "uber",      "orders": 6,  "sales": 18000, "fee": 5400,  "net": 12600, "avg_7d": 32771, "diff_prev": -0.40 },
+    { "date": "2026-03-20", "store": "nakameguro", "platform": "rocketnow", "orders": 7,  "sales": 21000, "fee": 7350,  "net": 13650, "avg_7d": 17571, "diff_prev": 0.40 },
+    { "date": "2026-03-21", "store": "nakameguro", "platform": "uber",      "orders": 14, "sales": 42000, "fee": 12600, "net": 29400, "avg_7d": 32771, "diff_prev": 1.33 },
+    { "date": "2026-03-21", "store": "nakameguro", "platform": "rocketnow", "orders": 6,  "sales": 18000, "fee": 6300,  "net": 11700, "avg_7d": 17571, "diff_prev": -0.14 },
+    { "date": "2026-03-22", "store": "nakameguro", "platform": "uber",      "orders": 9,  "sales": 27000, "fee": 8100,  "net": 18900, "avg_7d": 32771, "diff_prev": -0.36 },
+    { "date": "2026-03-22", "store": "nakameguro", "platform": "rocketnow", "orders": 11, "sales": 33000, "fee": 11550, "net": 21450, "avg_7d": 17571, "diff_prev": 0.83 },
+    { "date": "2026-03-23", "store": "nakameguro", "platform": "uber",      "orders": 12, "sales": 36000, "fee": 10800, "net": 25200, "avg_7d": 32771, "diff_prev": 0.33 },
+    { "date": "2026-03-23", "store": "nakameguro", "platform": "rocketnow", "orders": 4,  "sales": 12000, "fee": 4200,  "net": 7800,  "avg_7d": 17571, "diff_prev": -0.64 },
+    { "date": "2026-03-24", "store": "nakameguro", "platform": "uber",      "orders": 18, "sales": 52400, "fee": 15720, "net": 36680, "avg_7d": 32771, "diff_prev": 0.46 },
+    { "date": "2026-03-24", "store": "nakameguro", "platform": "rocketnow", "orders": 5,  "sales": 15000, "fee": 5250,  "net": 9750,  "avg_7d": 17571, "diff_prev": 0.25 }
+  ]
+}
