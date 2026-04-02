@@ -143,15 +143,6 @@ function normalize(data: any): Model {
   return { orders, gross, fee, net, orderCount, itemQty, feeRate, platforms, alerts, topDependency, byDate };
 }
 
-// ---------- StatusPill ----------
-function StatusPill({ order }: { order: Order }) {
-  const status = (order.status || 'ok').toLowerCase();
-  if (order.cancel_flag || status.includes('cancel')) return <span className="pill status-danger">cancel</span>;
-  if (order.delay_flag || status.includes('delay')) return <span className="pill status-warn">delay</span>;
-  if (status.includes('pending')) return <span className="pill status-warn">pending</span>;
-  return <span className="pill status-ok">ok</span>;
-}
-
 // ---------- DiffLabel ----------
 function DiffLabel({ value }: { value: number | null }) {
   if (value === null) return null;
@@ -187,10 +178,61 @@ function AlertBadge({ record }: { record: DailyRecord }) {
   return <>{badges}</>;
 }
 
+// ---------- 期間フィルター ----------
+type Period = '7' | '30' | 'month' | 'year';
+
+function filterByPeriod(byDate: { [date: string]: DailyRecord[] }, period: Period) {
+  const today = new Date();
+  const toStr = (d: Date) => d.toISOString().slice(0, 10);
+
+  let start: string;
+  if (period === '7') {
+    const d = new Date(today); d.setDate(d.getDate() - 6); start = toStr(d);
+  } else if (period === '30') {
+    const d = new Date(today); d.setDate(d.getDate() - 29); start = toStr(d);
+  } else if (period === 'month') {
+    start = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+  } else {
+    start = `${today.getFullYear()}-01-01`;
+  }
+  const end = toStr(today);
+  return Object.fromEntries(
+    Object.entries(byDate).filter(([date]) => date >= start && date <= end)
+  );
+}
+
+function getPrevPeriodSales(byDate: { [date: string]: DailyRecord[] }, period: Period): number {
+  const today = new Date();
+  const toStr = (d: Date) => d.toISOString().slice(0, 10);
+  let start: string; let end: string;
+  if (period === '7') {
+    const e = new Date(today); e.setDate(e.getDate() - 7);
+    const s = new Date(today); s.setDate(s.getDate() - 13);
+    start = toStr(s); end = toStr(e);
+  } else if (period === '30') {
+    const e = new Date(today); e.setDate(e.getDate() - 30);
+    const s = new Date(today); s.setDate(s.getDate() - 59);
+    start = toStr(s); end = toStr(e);
+  } else if (period === 'month') {
+    const m = today.getMonth() === 0 ? 11 : today.getMonth() - 1;
+    const y = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
+    start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+    end = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+  } else {
+    start = `${today.getFullYear() - 1}-01-01`;
+    end = `${today.getFullYear()}-01-01`;
+  }
+  return Object.entries(byDate)
+    .filter(([date]) => date >= start && date < end)
+    .flatMap(([, rows]) => rows)
+    .reduce((a, r) => a + Number(r.sales || 0), 0);
+}
+
 // ---------- メインコンポーネント ----------
 export default function Dashboard() {
   const [model, setModel] = useState<Model | null>(null);
   const [activeTab, setActiveTab] = useState('overview');
+  const [period, setPeriod] = useState<Period>('7');
   const [updatedAt, setUpdatedAt] = useState('更新待ち');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -216,9 +258,34 @@ export default function Dashboard() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const m = model;
+  const dates = m ? Object.keys(m.byDate).sort().reverse() : [];
+
+  // 期間フィルター済みデータ
+  const filteredByDate = m ? filterByPeriod(m.byDate, period) : {};
+  const filteredDates = Object.keys(filteredByDate).sort().reverse();
+  const periodSales = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.sales || 0), 0);
+  const periodFee = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.fee || 0), 0);
+  const periodNet = periodSales - periodFee;
+  const periodOrders = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.orders || 0), 0);
+  const prevSales = m ? getPrevPeriodSales(m.byDate, period) : 0;
+  const diffRatio = prevSales > 0 ? (periodSales - prevSales) / prevSales : null;
+
+  // 日別売上（バーチャート用）
+  const dailySales = filteredDates.map(date => ({
+    date,
+    sales: filteredByDate[date].reduce((a, r) => a + Number(r.sales || 0), 0),
+  }));
+  const maxSales = Math.max(...dailySales.map(d => d.sales), 1);
+
+  // Platform内訳
+  const platformSales: Record<string, number> = {};
+  Object.values(filteredByDate).flat().forEach(r => {
+    platformSales[r.platform] = (platformSales[r.platform] || 0) + Number(r.sales || 0);
+  });
+  const platformColors: Record<string, string> = { square: '#456fae', uber: '#4d8b63', rocketnow: '#b6811d', uber_eats: '#4d8b63' };
+
   const netPct = m && m.gross ? Math.max(0, (m.net / m.gross) * 100) : 0;
   const feePct = m && m.gross ? Math.max(0, (m.fee / m.gross) * 100) : 0;
-  const dates = m ? Object.keys(m.byDate).sort().reverse() : [];
 
   return (
     <div className="wrap">
@@ -257,29 +324,94 @@ export default function Dashboard() {
       {/* Overview タブ */}
       {activeTab === 'overview' && (
         <section>
+          {/* 期間切替 */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            {([['7', '7日'], ['30', '30日'], ['month', '月'], ['year', '年']] as [Period, string][]).map(([p, label]) => (
+              <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* 期間合計 */}
           <div className="grid">
             <div className="card">
               <div className="label">売上</div>
-              <div className="value">{m ? yen(m.gross) : '-'}</div>
-              <div className="meta">gross_total</div>
+              <div className="value">{yen(periodSales)}</div>
+              <div className="meta" style={{ marginTop: 6 }}>
+                {diffRatio !== null && (
+                  <span style={{ color: diffRatio >= 0 ? 'var(--ok)' : 'var(--danger)', fontWeight: 600 }}>
+                    {diffRatio >= 0 ? '↑' : '↓'} 前期間比 {Math.abs(Math.round(diffRatio * 100))}%
+                  </span>
+                )}
+              </div>
             </div>
             <div className="card">
               <div className="label">手数料</div>
-              <div className="value danger">{m ? yen(m.fee) : '-'}</div>
+              <div className="value danger">{yen(periodFee)}</div>
               <div className="meta">fee_total</div>
             </div>
             <div className="card">
               <div className="label">利益</div>
-              <div className="value ok">{m ? yen(m.net) : '-'}</div>
+              <div className="value ok">{yen(periodNet)}</div>
               <div className="meta">net_total</div>
             </div>
             <div className="card">
               <div className="label">注文数</div>
-              <div className="value">{m ? Number(m.orderCount || 0).toLocaleString('ja-JP') : '-'}</div>
-              <div className="meta">{m ? `${m.itemQty}点 / 手数料率 ${pct(m.feeRate)}` : '-'}</div>
+              <div className="value">{periodOrders.toLocaleString('ja-JP')}</div>
+              <div className="meta">orders</div>
             </div>
           </div>
 
+          {/* 日別推移バーチャート */}
+          {dailySales.length > 0 && (
+            <div className="section">
+              <h2>日別推移</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {dailySales.map(({ date, sales }) => (
+                  <div key={date} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                    <span style={{ width: 90, color: 'var(--muted)', flexShrink: 0 }}>{date.slice(5)}</span>
+                    <div style={{ flex: 1, background: '#e6e0d3', borderRadius: 4, height: 18, overflow: 'hidden' }}>
+                      <div style={{ width: `${Math.round((sales / maxSales) * 100)}%`, height: '100%', background: 'var(--ok)', borderRadius: 4 }} />
+                    </div>
+                    <span style={{ width: 80, textAlign: 'right', flexShrink: 0 }}>{yen(sales)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Platform内訳 */}
+          {Object.keys(platformSales).length > 0 && (
+            <div className="section">
+              <h2>Platform内訳</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {Object.entries(platformSales).sort((a, b) => b[1] - a[1]).map(([plat, sales]) => {
+                  const ratio = periodSales > 0 ? Math.round((sales / periodSales) * 100) : 0;
+                  const color = platformColors[plat] || '#888';
+                  return (
+                    <div key={plat} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                      <span style={{ width: 90, color, fontWeight: 600, flexShrink: 0 }}>{plat.toUpperCase()}</span>
+                      <div style={{ flex: 1, background: '#e6e0d3', borderRadius: 4, height: 18, overflow: 'hidden' }}>
+                        <div style={{ width: `${ratio}%`, height: '100%', background: color, borderRadius: 4 }} />
+                      </div>
+                      <span style={{ width: 80, textAlign: 'right', flexShrink: 0 }}>{ratio}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="legend" style={{ marginTop: 12 }}>
+                {Object.entries(platformSales).map(([plat]) => (
+                  <span key={plat}>
+                    <span className="dot" style={{ background: platformColors[plat] || '#888' }} />
+                    {plat.toUpperCase()} {yen(platformSales[plat])}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 売上内訳バー */}
           <div className="section">
             <h2>売上内訳</h2>
             <div className="bar">
@@ -294,34 +426,6 @@ export default function Dashboard() {
               <span><span className="dot" style={{ background: 'var(--ok)' }} />利益 {pct(netPct / 100)}</span>
               <span><span className="dot" style={{ background: 'var(--danger)' }} />手数料 {pct(feePct / 100)}</span>
             </div>
-          </div>
-
-          <div className="section">
-            <h2>注文明細</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>商品</th><th>数量</th><th>売上</th><th>手数料</th><th>利益</th><th>状態</th>
-                </tr>
-              </thead>
-              <tbody>
-                {m?.orders.map((o, i) => {
-                  const f = Number(o.total_fees ?? o.fee ?? 0);
-                  const n = Number(o.gross || 0) - f;
-                  return (
-                    <tr key={i}>
-                      <td>{o.product_name || o.item_name || '-'}</td>
-                      <td>{Number(o.qty || 0)}</td>
-                      <td>{yen(o.gross || 0)}</td>
-                      <td className="danger">{yen(f)}</td>
-                      <td className="ok">{yen(n)}</td>
-                      <td><StatusPill order={o} /></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <div className="footer-note">まずは実データで動くことを優先。分析拡張はまだ封印。</div>
           </div>
         </section>
       )}
