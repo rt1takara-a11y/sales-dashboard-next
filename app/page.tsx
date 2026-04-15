@@ -1,9 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
-// const DATA_URL = 'https://sundubu-ai-context.vercel.app/data/delivery_orders.json';
-const DATA_URL = '/api/all';
+const SQUARE_URL = '/api/square_records';
 
 // ---------- ヘルパー ----------
 function yen(v: number) {
@@ -67,6 +66,60 @@ interface Model {
   topDependency: Platform | undefined;
   byDate: { [date: string]: DailyRecord[] };
 }
+interface UploadInfo {
+  fileName: string;
+  orders: number;
+  dateMin: string;
+  dateMax: string;
+  platforms: string[];
+  uploadedAt: string;
+}
+
+// ---------- platform 正規化 ----------
+function normalizePlatform(raw: string): string {
+  const s = (raw || '').trim().toLowerCase();
+  if (s.includes('uber'))                              return 'uber';
+  if (s.includes('rocket') || s === 'ロケット')        return 'rocketnow';
+  if (s.includes('square') || s.includes('店'))        return 'square';
+  return s || 'unknown';
+}
+
+// ---------- CSV → DailyRecord[] ----------
+function parseUploadCSV(text: string): DailyRecord[] {
+  const cleaned = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines   = cleaned.trim().split('\n').filter(l => l.trim());
+  if (lines.length < 2) throw new Error('データ行がありません');
+
+  const headers  = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const iDate    = headers.indexOf('date');
+  const iSales   = headers.indexOf('sales');
+  const iPlatform = headers.indexOf('platform');
+
+  const missing = ['date', 'sales', 'platform'].filter(h => !headers.includes(h));
+  if (missing.length > 0) throw new Error(`列が不足しています: ${missing.join(', ')}`);
+
+  const grouped: Record<string, DailyRecord> = {};
+
+  lines.slice(1).forEach(line => {
+    const cols     = line.split(',').map(v => v.trim());
+    const date     = (cols[iDate] || '').trim();
+    const salesRaw = (cols[iSales] || '').replace(/[¥,]/g, '').trim();
+    const platform = normalizePlatform(cols[iPlatform] || '');
+    const sales    = Math.round(Number(salesRaw) || 0);
+
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
+
+    const key = `${date}__${platform}`;
+    if (!grouped[key]) {
+      grouped[key] = { date, platform, store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
+    }
+    grouped[key].orders += 1;
+    grouped[key].sales  += sales;
+    grouped[key].net    += sales;
+  });
+
+  return Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+}
 
 // ---------- normalize ----------
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -96,8 +149,8 @@ function normalize(data: any): Model {
       const p = (r.platform || 'unknown').toLowerCase();
       if (!grouped[p]) grouped[p] = { platform: p, gross: 0, fee: 0, net: 0, orders: 0, items: 0, cancelled: 0, delayed: 0, pending: 0, fee_rate: 0, cancel_rate: 0, delay_rate: 0, dependency: 0 };
       grouped[p].gross += Number(r.sales || 0);
-      grouped[p].fee += Number(r.fee || 0);
-      grouped[p].net = grouped[p].gross - grouped[p].fee;
+      grouped[p].fee   += Number(r.fee || 0);
+      grouped[p].net    = grouped[p].gross - grouped[p].fee;
       grouped[p].orders += Number(r.orders || 0);
     });
   }
@@ -113,29 +166,29 @@ function normalize(data: any): Model {
   orders.forEach(o => {
     const p = (o.platform || data.platform || 'unknown').toLowerCase();
     if (!grouped[p]) grouped[p] = { platform: p, gross: 0, fee: 0, net: 0, orders: 0, items: 0, cancelled: 0, delayed: 0, pending: 0, fee_rate: 0, cancel_rate: 0, delay_rate: 0, dependency: 0 };
-    grouped[p].gross += Number(o.gross || 0);
-    grouped[p].fee += Number(o.total_fees ?? o.fee ?? 0);
-    grouped[p].net += Number(o.gross || 0) - Number(o.total_fees ?? o.fee ?? 0);
+    grouped[p].gross  += Number(o.gross || 0);
+    grouped[p].fee    += Number(o.total_fees ?? o.fee ?? 0);
+    grouped[p].net    += Number(o.gross || 0) - Number(o.total_fees ?? o.fee ?? 0);
     grouped[p].orders += 1;
-    grouped[p].items += Number(o.qty || 0);
+    grouped[p].items  += Number(o.qty || 0);
     if (o.cancel_flag || String(o.status || '').toLowerCase().includes('cancel')) grouped[p].cancelled += 1;
-    if (o.delay_flag || String(o.status || '').toLowerCase().includes('delay')) grouped[p].delayed += 1;
+    if (o.delay_flag  || String(o.status || '').toLowerCase().includes('delay'))  grouped[p].delayed   += 1;
     if (String(o.status || '').toLowerCase().includes('pending')) grouped[p].pending += 1;
   });
 
   const platforms: Platform[] = Object.values(grouped).map(p => ({
     ...p,
-    fee_rate: p.gross ? p.fee / p.gross : 0,
+    fee_rate:    p.gross  ? p.fee      / p.gross  : 0,
     cancel_rate: p.orders ? p.cancelled / p.orders : 0,
-    delay_rate: p.orders ? p.delayed / p.orders : 0,
-    dependency: gross ? p.gross / gross : 0,
+    delay_rate:  p.orders ? p.delayed   / p.orders : 0,
+    dependency:  gross    ? p.gross    / gross     : 0,
   }));
 
   const alerts = {
-    reconciled: orders.filter(o => o._reconciled === true).length,
-    cancelled: orders.filter(o => o.cancel_flag || String(o.status || '').toLowerCase().includes('cancel')).length,
-    delayed: orders.filter(o => o.delay_flag || String(o.status || '').toLowerCase().includes('delay')).length,
-    pending: orders.filter(o => String(o.status || '').toLowerCase().includes('pending')).length,
+    reconciled:  orders.filter(o => o._reconciled === true).length,
+    cancelled:   orders.filter(o => o.cancel_flag || String(o.status || '').toLowerCase().includes('cancel')).length,
+    delayed:     orders.filter(o => o.delay_flag  || String(o.status || '').toLowerCase().includes('delay')).length,
+    pending:     orders.filter(o => String(o.status || '').toLowerCase().includes('pending')).length,
     fee_mismatch: orders.filter(o => Number(o.other_fee || 0) >= 2).length,
   };
 
@@ -217,10 +270,10 @@ function getPrevPeriodSales(byDate: { [date: string]: DailyRecord[] }, period: P
     const m = today.getMonth() === 0 ? 11 : today.getMonth() - 1;
     const y = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
     start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
-    end = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+    end   = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
   } else {
     start = `${today.getFullYear() - 1}-01-01`;
-    end = `${today.getFullYear()}-01-01`;
+    end   = `${today.getFullYear()}-01-01`;
   }
   return Object.entries(byDate)
     .filter(([date]) => date >= start && date < end)
@@ -230,22 +283,59 @@ function getPrevPeriodSales(byDate: { [date: string]: DailyRecord[] }, period: P
 
 // ---------- メインコンポーネント ----------
 export default function Dashboard() {
-  const [model, setModel] = useState<Model | null>(null);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [period, setPeriod] = useState<Period>('7');
-  const [updatedAt, setUpdatedAt] = useState('更新待ち');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [model, setModel]           = useState<Model | null>(null);
+  const [activeTab, setActiveTab]   = useState('overview');
+  const [period, setPeriod]         = useState<Period>('7');
+  const [updatedAt, setUpdatedAt]   = useState('更新待ち');
+  const [error, setError]           = useState('');
+  const [loading, setLoading]       = useState(false);
+  const [uploadedRecords, setUploadedRecordsState] = useState<DailyRecord[]>([]);
+  const [uploadInfo, setUploadInfoState]           = useState<UploadInfo | null>(null);
+  const [uploadError, setUploadError] = useState('');
+  const [dragOver, setDragOver]       = useState(false);
+  const uploadedRef = useRef<DailyRecord[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // localStorage から復元
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('csv_records');
+      const info  = localStorage.getItem('csv_upload_info');
+      if (saved) {
+        const records = JSON.parse(saved) as DailyRecord[];
+        uploadedRef.current = records;
+        setUploadedRecordsState(records);
+      }
+      if (info) setUploadInfoState(JSON.parse(info));
+    } catch { /* ignore */ }
+  }, []);
+
+  function setUploadedRecords(records: DailyRecord[]) {
+    uploadedRef.current = records;
+    setUploadedRecordsState(records);
+  }
+
+  // Square API から取得 → CSV データとマージ
   const loadData = useCallback(async () => {
     setError('');
     setLoading(true);
     setUpdatedAt('更新中...');
     try {
-      const res = await fetch(DATA_URL, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setModel(normalize(data));
+      const res = await fetch(SQUARE_URL, { cache: 'no-store' });
+      const squareRecords: DailyRecord[] = res.ok
+        ? ((await res.json()).records || [])
+        : [];
+
+      const uploaded    = uploadedRef.current;
+      const uploadedKeys = new Set(uploaded.map(r => `${r.date}__${r.platform}`));
+
+      // アップロード済みデータを優先、Square は補完
+      const merged = [
+        ...uploaded,
+        ...squareRecords.filter(r => !uploadedKeys.has(`${r.date}__${r.platform}`)),
+      ].sort((a, b) => b.date.localeCompare(a.date));
+
+      setModel(normalize({ records: merged }));
       setUpdatedAt('更新: ' + new Date().toLocaleString('ja-JP'));
     } catch (e) {
       setError('読み込み失敗: ' + e);
@@ -257,27 +347,85 @@ export default function Dashboard() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const m = model;
+  // CSV 処理
+  function processCSV(text: string, fileName: string) {
+    setUploadError('');
+    try {
+      const records = parseUploadCSV(text);
+      if (records.length === 0) throw new Error('有効な注文データが見つかりませんでした');
+
+      const dates     = records.map(r => r.date).sort();
+      const platforms = [...new Set(records.map(r => r.platform))];
+      const info: UploadInfo = {
+        fileName,
+        orders:     records.reduce((s, r) => s + r.orders, 0),
+        dateMin:    dates[0],
+        dateMax:    dates[dates.length - 1],
+        platforms,
+        uploadedAt: new Date().toLocaleString('ja-JP'),
+      };
+
+      setUploadedRecords(records);
+      setUploadInfoState(info);
+      localStorage.setItem('csv_records',      JSON.stringify(records));
+      localStorage.setItem('csv_upload_info',  JSON.stringify(info));
+
+      // データ再マージ
+      loadData();
+    } catch (e) {
+      setUploadError('エラー: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => processCSV(ev.target?.result as string, file.name);
+    reader.readAsText(file, 'utf-8');
+    e.target.value = '';
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.name.endsWith('.csv')) {
+      setUploadError('CSVファイルをドロップしてください');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = ev => processCSV(ev.target?.result as string, file.name);
+    reader.readAsText(file, 'utf-8');
+  }
+
+  function clearUpload() {
+    setUploadedRecords([]);
+    setUploadInfoState(null);
+    localStorage.removeItem('csv_records');
+    localStorage.removeItem('csv_upload_info');
+    loadData();
+  }
+
+  const m     = model;
   const dates = m ? Object.keys(m.byDate).sort().reverse() : [];
 
   // 期間フィルター済みデータ
-  const filteredByDate = m ? filterByPeriod(m.byDate, period) : {};
-  const filteredDates = Object.keys(filteredByDate).sort().reverse();
-  const periodSales = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.sales || 0), 0);
-  const periodFee = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.fee || 0), 0);
-  const periodNet = periodSales - periodFee;
-  const periodOrders = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.orders || 0), 0);
-  const prevSales = m ? getPrevPeriodSales(m.byDate, period) : 0;
-  const diffRatio = prevSales > 0 ? (periodSales - prevSales) / prevSales : null;
+  const filteredByDate  = m ? filterByPeriod(m.byDate, period) : {};
+  const filteredDates   = Object.keys(filteredByDate).sort().reverse();
+  const periodSales     = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.sales || 0), 0);
+  const periodFee       = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.fee || 0), 0);
+  const periodNet       = periodSales - periodFee;
+  const periodOrders    = Object.values(filteredByDate).flat().reduce((a, r) => a + Number(r.orders || 0), 0);
+  const prevSales       = m ? getPrevPeriodSales(m.byDate, period) : 0;
+  const diffRatio       = prevSales > 0 ? (periodSales - prevSales) / prevSales : null;
 
-  // 日別売上（バーチャート用）
   const dailySales = filteredDates.map(date => ({
     date,
     sales: filteredByDate[date].reduce((a, r) => a + Number(r.sales || 0), 0),
   }));
   const maxSales = Math.max(...dailySales.map(d => d.sales), 1);
 
-  // Platform内訳
   const platformSales: Record<string, number> = {};
   Object.values(filteredByDate).flat().forEach(r => {
     platformSales[r.platform] = (platformSales[r.platform] || 0) + Number(r.sales || 0);
@@ -287,26 +435,32 @@ export default function Dashboard() {
   const netPct = m && m.gross ? Math.max(0, (m.net / m.gross) * 100) : 0;
   const feePct = m && m.gross ? Math.max(0, (m.fee / m.gross) * 100) : 0;
 
+  const TABS = [
+    { id: 'overview',  label: 'Overview'  },
+    { id: 'platforms', label: 'Platforms' },
+    { id: 'alerts',    label: 'Alerts'    },
+    { id: 'upload',    label: `アップロード${uploadedRecords.length > 0 ? ' ●' : ''}` },
+  ];
+
   return (
     <div className="wrap">
       {/* ヘッダー */}
       <div className="header">
         <div className="titlebox">
           <h1>デリバリー売上ダッシュボード</h1>
-          <div className="sub">実データ接続版 / delivery_orders.json 直結</div>
+          <div className="sub">Square 自動取得 + CSV アップロード対応</div>
         </div>
         <div className="actions">
           <button className="btn primary" onClick={loadData} disabled={loading}>更新</button>
-          <button className="btn" onClick={() => window.open(DATA_URL, '_blank')}>生データを開く</button>
           <div className="sub">{updatedAt}</div>
         </div>
       </div>
 
       {/* タブ */}
       <div className="tabbar">
-        {['overview', 'platforms', 'alerts'].map(tab => (
-          <button key={tab} className={`tab${activeTab === tab ? ' active' : ''}`} onClick={() => setActiveTab(tab)}>
-            {tab === 'overview' ? 'Overview' : tab === 'platforms' ? 'Platforms' : 'Alerts'}
+        {TABS.map(tab => (
+          <button key={tab.id} className={`tab${activeTab === tab.id ? ' active' : ''}`} onClick={() => setActiveTab(tab.id)}>
+            {tab.label}
           </button>
         ))}
       </div>
@@ -321,10 +475,9 @@ export default function Dashboard() {
       {/* エラー */}
       {error && <div className="section" style={{ color: 'var(--danger)' }}>{error}</div>}
 
-      {/* Overview タブ */}
+      {/* ===== Overview ===== */}
       {activeTab === 'overview' && (
         <section>
-          {/* 期間切替 */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             {([['7', '7日'], ['30', '30日'], ['month', '月'], ['year', '年']] as [Period, string][]).map(([p, label]) => (
               <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>
@@ -333,7 +486,6 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* 期間合計 */}
           <div className="grid">
             <div className="card">
               <div className="label">売上</div>
@@ -363,7 +515,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* 日別推移バーチャート */}
           {dailySales.length > 0 && (
             <div className="section">
               <h2>日別推移</h2>
@@ -381,7 +532,6 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Platform内訳 */}
           {Object.keys(platformSales).length > 0 && (
             <div className="section">
               <h2>Platform内訳</h2>
@@ -411,7 +561,6 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 売上内訳バー */}
           <div className="section">
             <h2>売上内訳</h2>
             <div className="bar">
@@ -430,7 +579,7 @@ export default function Dashboard() {
         </section>
       )}
 
-      {/* Platforms タブ */}
+      {/* ===== Platforms ===== */}
       {activeTab === 'platforms' && (
         <section>
           <div className="platform-grid">
@@ -452,21 +601,20 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* 日別集計 */}
           {dates.length > 0 && (
             <div style={{ marginTop: 24 }}>
               <h2 style={{ marginBottom: 12 }}>日別集計</h2>
               {dates.map((date, i) => {
-                const rows = m!.byDate[date];
+                const rows       = m!.byDate[date];
                 const totalSales = rows.reduce((a, r) => a + Number(r.sales || 0), 0);
-                const totalFee = rows.reduce((a, r) => a + Number(r.fee || 0), 0);
-                const totalNet = totalSales - totalFee;
-                const prevDate = dates[i + 1];
-                const prevRows = prevDate ? m!.byDate[prevDate] : null;
-                const prevSales = prevRows ? prevRows.reduce((a, r) => a + Number(r.sales || 0), 0) : null;
-                const prevNet = prevRows ? prevRows.reduce((a, r) => a + (r.sales - r.fee), 0) : null;
-                const diffSales = prevSales !== null ? totalSales - prevSales : null;
-                const diffNet = prevNet !== null ? totalNet - prevNet : null;
+                const totalFee   = rows.reduce((a, r) => a + Number(r.fee || 0), 0);
+                const totalNet   = totalSales - totalFee;
+                const prevDate   = dates[i + 1];
+                const prevRows   = prevDate ? m!.byDate[prevDate] : null;
+                const prevSalesD = prevRows ? prevRows.reduce((a, r) => a + Number(r.sales || 0), 0) : null;
+                const prevNetD   = prevRows ? prevRows.reduce((a, r) => a + (r.sales - r.fee), 0) : null;
+                const diffSales  = prevSalesD !== null ? totalSales - prevSalesD : null;
+                const diffNet    = prevNetD   !== null ? totalNet   - prevNetD   : null;
 
                 return (
                   <div key={date} className="section" style={{ marginBottom: 12 }}>
@@ -494,16 +642,16 @@ export default function Dashboard() {
         </section>
       )}
 
-      {/* Alerts タブ */}
+      {/* ===== Alerts ===== */}
       {activeTab === 'alerts' && m && (
         <section>
           <div className="alert-grid">
             {([
-              ['reconciled', 'reconciled', m.alerts.reconciled],
-              ['cancelled', 'cancelled', m.alerts.cancelled],
-              ['delayed', 'delayed', m.alerts.delayed],
-              ['pending', 'pending', m.alerts.pending],
-              ['fee_mismatch', 'fee mismatch', m.alerts.fee_mismatch],
+              ['reconciled',  'reconciled',  m.alerts.reconciled],
+              ['cancelled',   'cancelled',   m.alerts.cancelled],
+              ['delayed',     'delayed',     m.alerts.delayed],
+              ['pending',     'pending',     m.alerts.pending],
+              ['fee_mismatch','fee mismatch',m.alerts.fee_mismatch],
             ] as [string, string, number][]).map(([key, label, n]) => {
               const cls = n > 0 ? (key === 'cancelled' || key === 'fee_mismatch' ? 'danger' : 'warn') : '';
               return (
@@ -521,6 +669,90 @@ export default function Dashboard() {
                 <tr><th>fee_rate &gt; 33%</th><td>赤扱い</td></tr>
                 <tr><th>cancel_rate &gt; 10%</th><td>赤扱い</td></tr>
                 <tr><th>dependency &gt; 45%</th><td>依存警告</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* ===== アップロード ===== */}
+      {activeTab === 'upload' && (
+        <section>
+          {/* ドロップゾーン */}
+          <div
+            className="section"
+            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              border: `2px dashed ${dragOver ? 'var(--ok)' : '#ccc'}`,
+              borderRadius: 10,
+              padding: '32px 24px',
+              textAlign: 'center',
+              cursor: 'pointer',
+              background: dragOver ? '#f0faf4' : '#fafaf8',
+              transition: 'all 0.15s',
+            }}
+          >
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📂</div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>CSVをドロップ、またはクリックして選択</div>
+            <div style={{ color: 'var(--muted)', fontSize: 13 }}>対応フォーマット: date, sales, platform, item</div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv"
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
+            />
+          </div>
+
+          {uploadError && (
+            <div style={{ color: 'var(--danger)', marginTop: 12, padding: '10px 14px', background: '#fff0f0', borderRadius: 8, fontSize: 13 }}>
+              {uploadError}
+            </div>
+          )}
+
+          {/* 現在のアップロード状態 */}
+          {uploadInfo && (
+            <div className="section" style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h2 style={{ margin: 0 }}>アップロード済みデータ</h2>
+                <button className="btn" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }} onClick={clearUpload}>
+                  クリア
+                </button>
+              </div>
+              <table>
+                <tbody>
+                  <tr><th>ファイル</th><td>{uploadInfo.fileName}</td></tr>
+                  <tr><th>期間</th><td>{uploadInfo.dateMin} 〜 {uploadInfo.dateMax}</td></tr>
+                  <tr><th>注文数</th><td>{uploadInfo.orders.toLocaleString('ja-JP')} 件</td></tr>
+                  <tr><th>媒体</th><td>{uploadInfo.platforms.map(p => p.toUpperCase()).join(', ')}</td></tr>
+                  <tr><th>アップロード日時</th><td>{uploadInfo.uploadedAt}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* フォーマット説明 */}
+          <div className="section" style={{ marginTop: 16 }}>
+            <h2>CSVフォーマット</h2>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 10 }}>
+              1行 = 1注文（または1会計）。ヘッダー行必須。
+            </div>
+            <pre style={{ background: '#f5f3ef', padding: '12px 16px', borderRadius: 8, fontSize: 12, overflowX: 'auto', lineHeight: 1.7 }}>
+{`date,sales,platform,item
+2026-04-15,2330,uber,海鮮ドゥブ
+2026-04-15,1780,uber,豚キムチドゥブ
+2026-04-15,3200,square,海老ドゥブ
+2026-04-15,2860,rocketnow,NEW海老ドゥブ`}
+            </pre>
+            <table style={{ marginTop: 12 }}>
+              <tbody>
+                <tr><th>date</th><td>日付（YYYY-MM-DD）</td></tr>
+                <tr><th>sales</th><td>注文金額（税込・円）</td></tr>
+                <tr><th>platform</th><td>uber / rocketnow / square / 店内 など</td></tr>
+                <tr><th>item</th><td>商品名（集計には使わない）</td></tr>
               </tbody>
             </table>
           </div>
