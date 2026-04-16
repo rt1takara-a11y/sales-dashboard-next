@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import * as XLSX from 'xlsx';
 
 const SQUARE_URL = '/api/square_records';
 
@@ -119,6 +120,100 @@ function parseUploadCSV(text: string): DailyRecord[] {
   });
 
   return Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+// ---------- Excel → DailyRecord[] ----------
+function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
+  const wb   = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+  const ws   = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown[][];
+
+  // ヘッダー行を探す（3列以上あり、日付っぽい値がある行）
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(20, rows.length); i++) {
+    const row = rows[i] as string[];
+    if (row.length >= 3 && row.some(c => typeof c === 'string' && c.length > 0)) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx < 0) throw new Error('ヘッダー行が見つかりません');
+
+  const headers = (rows[headerIdx] as string[]).map(h => String(h || '').trim().toLowerCase());
+
+  // --- パターン①: 固定フォーマット (date / sales / platform) ---
+  const iDate     = headers.indexOf('date');
+  const iSales    = headers.indexOf('sales');
+  const iPlatform = headers.indexOf('platform');
+  const iItem     = headers.indexOf('item');
+
+  if (iDate >= 0 && iSales >= 0 && iPlatform >= 0) {
+    const grouped: Record<string, DailyRecord> = {};
+    rows.slice(headerIdx + 1).forEach(row => {
+      const r        = row as unknown[];
+      const date     = String(r[iDate] || '').slice(0, 10);
+      const sales    = Math.round(Number(String(r[iSales] || '').replace(/[¥,]/g, '')) || 0);
+      const platform = normalizePlatform(String(r[iPlatform] || ''));
+      void iItem; // item は集計に使わない
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
+      const key = `${date}__${platform}`;
+      if (!grouped[key]) grouped[key] = { date, platform, store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
+      grouped[key].orders += 1;
+      grouped[key].sales  += sales;
+      grouped[key].net    += sales;
+    });
+    const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+    if (result.length > 0) return result;
+  }
+
+  // --- パターン②: Uber Eats Excel (注文状況 / 注文単価 / 注文日) ---
+  const iStatus = headers.findIndex(h => h.includes('注文状況'));
+  const iAmount = headers.findIndex(h => h.includes('注文単価'));
+  const iUberDate = headers.findIndex(h => h === '注文日');
+  if (iStatus >= 0 && iAmount >= 0 && iUberDate >= 0) {
+    const grouped: Record<string, DailyRecord> = {};
+    rows.slice(headerIdx + 1).forEach(row => {
+      const r      = row as unknown[];
+      if (String(r[iStatus] || '').toLowerCase() !== 'completed') return;
+      const date   = String(r[iUberDate] || '').slice(0, 10);
+      const amount = Math.round(Number(String(r[iAmount] || '').replace(/[¥,]/g, '')) || 0);
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) return;
+      const key = `${date}__uber`;
+      if (!grouped[key]) grouped[key] = { date, platform: 'uber', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
+      grouped[key].orders += 1;
+      grouped[key].sales  += amount;
+      grouped[key].net    += amount;
+    });
+    const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+    if (result.length > 0) return result;
+  }
+
+  // --- パターン③: RocketNOW Excel (取引日 / 売上高 / 取引タイプ) ---
+  const iRkDate  = headers.findIndex(h => h === '取引日');
+  const iRkSales = headers.findIndex(h => h === '売上高');
+  const iRkFee   = headers.findIndex(h => h === '総手数料');
+  const iRkType  = headers.findIndex(h => h === '取引タイプ');
+  if (iRkDate >= 0 && iRkSales >= 0 && iRkType >= 0) {
+    const grouped: Record<string, DailyRecord> = {};
+    rows.slice(headerIdx + 1).forEach(row => {
+      const r = row as unknown[];
+      if (String(r[iRkType] || '') !== 'PAY') return;
+      const date  = String(r[iRkDate] || '').slice(0, 10);
+      const sales = Math.round(Number(r[iRkSales] || 0));
+      const fee   = iRkFee >= 0 ? Math.round(Number(r[iRkFee] || 0)) : 0;
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
+      const key = `${date}__rocketnow`;
+      if (!grouped[key]) grouped[key] = { date, platform: 'rocketnow', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
+      grouped[key].orders += 1;
+      grouped[key].sales  += sales;
+      grouped[key].fee    += fee;
+      grouped[key].net    += sales - fee;
+    });
+    const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+    if (result.length > 0) return result;
+  }
+
+  throw new Error('対応している列が見つかりません。date/sales/platform 列、またはUber Eats・RocketNOW形式のExcelを使用してください');
 }
 
 // ---------- normalize ----------
@@ -347,42 +442,69 @@ export default function Dashboard() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // CSV 処理
-  function processCSV(text: string, fileName: string) {
+  // アップロード完了処理（既存データとマージ）
+  function finishUpload(newRecords: DailyRecord[], fileName: string) {
+    if (newRecords.length === 0) throw new Error('有効な注文データが見つかりませんでした');
+
+    // 同じ date+platform は新データで上書き、それ以外は既存を保持
+    const newKeys  = new Set(newRecords.map(r => `${r.date}__${r.platform}`));
+    const merged   = [
+      ...uploadedRef.current.filter(r => !newKeys.has(`${r.date}__${r.platform}`)),
+      ...newRecords,
+    ].sort((a, b) => b.date.localeCompare(a.date));
+
+    const dates     = merged.map(r => r.date).sort();
+    const platforms = [...new Set(merged.map(r => r.platform))];
+    const info: UploadInfo = {
+      fileName,
+      orders:     merged.reduce((s, r) => s + r.orders, 0),
+      dateMin:    dates[0],
+      dateMax:    dates[dates.length - 1],
+      platforms,
+      uploadedAt: new Date().toLocaleString('ja-JP'),
+    };
+
+    setUploadedRecords(merged);
+    setUploadInfoState(info);
+    localStorage.setItem('csv_records',     JSON.stringify(merged));
+    localStorage.setItem('csv_upload_info', JSON.stringify(info));
+    loadData();
+  }
+
+  function processFile(file: File) {
     setUploadError('');
-    try {
-      const records = parseUploadCSV(text);
-      if (records.length === 0) throw new Error('有効な注文データが見つかりませんでした');
+    const ext    = file.name.split('.').pop()?.toLowerCase();
+    const reader = new FileReader();
 
-      const dates     = records.map(r => r.date).sort();
-      const platforms = [...new Set(records.map(r => r.platform))];
-      const info: UploadInfo = {
-        fileName,
-        orders:     records.reduce((s, r) => s + r.orders, 0),
-        dateMin:    dates[0],
-        dateMax:    dates[dates.length - 1],
-        platforms,
-        uploadedAt: new Date().toLocaleString('ja-JP'),
+    if (ext === 'xlsx' || ext === 'xls') {
+      reader.onload = ev => {
+        try {
+          const records = parseExcel(ev.target!.result as ArrayBuffer);
+          if (records.length === 0) throw new Error('有効な注文データが見つかりませんでした');
+          finishUpload(records, file.name);
+        } catch (e) {
+          setUploadError('エラー: ' + (e instanceof Error ? e.message : String(e)));
+        }
       };
-
-      setUploadedRecords(records);
-      setUploadInfoState(info);
-      localStorage.setItem('csv_records',      JSON.stringify(records));
-      localStorage.setItem('csv_upload_info',  JSON.stringify(info));
-
-      // データ再マージ
-      loadData();
-    } catch (e) {
-      setUploadError('エラー: ' + (e instanceof Error ? e.message : String(e)));
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.onload = ev => {
+        try {
+          const records = parseUploadCSV(ev.target!.result as string);
+          if (records.length === 0) throw new Error('有効な注文データが見つかりませんでした');
+          finishUpload(records, file.name);
+        } catch (e) {
+          setUploadError('エラー: ' + (e instanceof Error ? e.message : String(e)));
+        }
+      };
+      reader.readAsText(file, 'utf-8');
     }
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => processCSV(ev.target?.result as string, file.name);
-    reader.readAsText(file, 'utf-8');
+    processFile(file);
     e.target.value = '';
   }
 
@@ -390,13 +512,13 @@ export default function Dashboard() {
     e.preventDefault();
     setDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (!file || !file.name.endsWith('.csv')) {
-      setUploadError('CSVファイルをドロップしてください');
+    if (!file) return;
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (!['csv', 'xlsx', 'xls'].includes(ext || '')) {
+      setUploadError('CSV または Excel ファイルをドロップしてください');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = ev => processCSV(ev.target?.result as string, file.name);
-    reader.readAsText(file, 'utf-8');
+    processFile(file);
   }
 
   function clearUpload() {
@@ -696,12 +818,12 @@ export default function Dashboard() {
             }}
           >
             <div style={{ fontSize: 32, marginBottom: 8 }}>📂</div>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>CSVをドロップ、またはクリックして選択</div>
-            <div style={{ color: 'var(--muted)', fontSize: 13 }}>対応フォーマット: date, sales, platform, item</div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>ファイルをドロップ、またはクリックして選択</div>
+            <div style={{ color: 'var(--muted)', fontSize: 13 }}>CSV・Excel (.xlsx) 対応</div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv"
+              accept=".csv,.xlsx,.xls"
               style={{ display: 'none' }}
               onChange={handleFileChange}
             />
@@ -738,21 +860,22 @@ export default function Dashboard() {
           <div className="section" style={{ marginTop: 16 }}>
             <h2>CSVフォーマット</h2>
             <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 10 }}>
-              1行 = 1注文（または1会計）。ヘッダー行必須。
+              1行＝1注文（または1会計）。ヘッダー行必須。
             </div>
             <pre style={{ background: '#f5f3ef', padding: '12px 16px', borderRadius: 8, fontSize: 12, overflowX: 'auto', lineHeight: 1.7 }}>
 {`date,sales,platform,item
 2026-04-15,2330,uber,海鮮ドゥブ
 2026-04-15,1780,uber,豚キムチドゥブ
 2026-04-15,3200,square,海老ドゥブ
-2026-04-15,2860,rocketnow,NEW海老ドゥブ`}
+2026-04-15,2860,rocket,NEW海老ドゥブ
+2026-04-15,1500,店内,スンドゥブ`}
             </pre>
             <table style={{ marginTop: 12 }}>
               <tbody>
                 <tr><th>date</th><td>日付（YYYY-MM-DD）</td></tr>
                 <tr><th>sales</th><td>注文金額（税込・円）</td></tr>
-                <tr><th>platform</th><td>uber / rocketnow / square / 店内 など</td></tr>
-                <tr><th>item</th><td>商品名（集計には使わない）</td></tr>
+                <tr><th>platform</th><td>uber / rocket / square / 店内 など自由記述</td></tr>
+                <tr><th>item</th><td>商品名またはカテゴリ（集計には使わない）</td></tr>
               </tbody>
             </table>
           </div>
