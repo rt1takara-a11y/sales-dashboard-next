@@ -565,8 +565,7 @@ export default function Dashboard() {
     loadData();
   }
 
-  const m     = model;
-  const dates = m ? Object.keys(m.byDate).sort().reverse() : [];
+  const m = model;
 
   // 期間フィルター済みデータ
   const filteredByDate  = m ? filterByPeriod(m.byDate, period) : {};
@@ -578,20 +577,38 @@ export default function Dashboard() {
   const prevSales       = m ? getPrevPeriodSales(m.byDate, period) : 0;
   const diffRatio       = prevSales > 0 ? (periodSales - prevSales) / prevSales : null;
 
+  const platformColors: Record<string, string> = { square: '#456fae', uber: '#4d8b63', rocketnow: '#b6811d', uber_eats: '#4d8b63' };
+
   const dailySales = filteredDates.map(date => ({
     date,
-    sales: filteredByDate[date].reduce((a, r) => a + Number(r.sales || 0), 0),
+    rows: filteredByDate[date],
+    total: filteredByDate[date].reduce((a, r) => a + Number(r.sales || 0), 0),
   }));
-  const maxSales = Math.max(...dailySales.map(d => d.sales), 1);
+  const maxSales = Math.max(...dailySales.map(d => d.total), 1);
 
   const platformSales: Record<string, number> = {};
   Object.values(filteredByDate).flat().forEach(r => {
     platformSales[r.platform] = (platformSales[r.platform] || 0) + Number(r.sales || 0);
   });
-  const platformColors: Record<string, string> = { square: '#456fae', uber: '#4d8b63', rocketnow: '#b6811d', uber_eats: '#4d8b63' };
 
-  const netPct = m && m.gross ? Math.max(0, (m.net / m.gross) * 100) : 0;
-  const feePct = m && m.gross ? Math.max(0, (m.fee / m.gross) * 100) : 0;
+  // 期間フィルター済みプラットフォーム集計
+  const filteredPlatformMap: Record<string, { platform: string; gross: number; fee: number; net: number; orders: number; fee_rate: number; dependency: number }> = {};
+  Object.values(filteredByDate).flat().forEach(r => {
+    const p = r.platform;
+    if (!filteredPlatformMap[p]) filteredPlatformMap[p] = { platform: p, gross: 0, fee: 0, net: 0, orders: 0, fee_rate: 0, dependency: 0 };
+    filteredPlatformMap[p].gross  += Number(r.sales || 0);
+    filteredPlatformMap[p].fee    += Number(r.fee   || 0);
+    filteredPlatformMap[p].net    += Number(r.sales || 0) - Number(r.fee || 0);
+    filteredPlatformMap[p].orders += Number(r.orders || 0);
+  });
+  const filteredPlatforms = Object.values(filteredPlatformMap).map(p => ({
+    ...p,
+    fee_rate:   p.gross ? p.fee / p.gross : 0,
+    dependency: periodSales ? p.gross / periodSales : 0,
+  }));
+
+  const netPct = periodSales ? Math.max(0, (periodNet / periodSales) * 100) : 0;
+  const feePct = periodSales ? Math.max(0, (periodFee / periodSales) * 100) : 0;
 
   const TABS = [
     { id: 'overview',  label: 'Overview'  },
@@ -677,14 +694,23 @@ export default function Dashboard() {
             <div className="section">
               <h2>日別推移</h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {dailySales.map(({ date, sales }) => (
+                {dailySales.map(({ date, rows, total }) => (
                   <div key={date} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
                     <span style={{ width: 90, color: 'var(--muted)', flexShrink: 0 }}>{date.slice(5)}</span>
                     <div style={{ flex: 1, background: '#e6e0d3', borderRadius: 4, height: 18, overflow: 'hidden' }}>
-                      <div style={{ width: `${Math.round((sales / maxSales) * 100)}%`, height: '100%', background: 'var(--ok)', borderRadius: 4 }} />
+                      <div style={{ display: 'flex', width: `${Math.round((total / maxSales) * 100)}%`, height: '100%' }}>
+                        {rows.sort((a, b) => b.sales - a.sales).map((r, i) => (
+                          <div key={i} style={{ flex: r.sales, background: platformColors[r.platform] || '#888' }} />
+                        ))}
+                      </div>
                     </div>
-                    <span style={{ width: 80, textAlign: 'right', flexShrink: 0 }}>{yen(sales)}</span>
+                    <span style={{ width: 80, textAlign: 'right', flexShrink: 0 }}>{yen(total)}</span>
                   </div>
+                ))}
+              </div>
+              <div className="legend" style={{ marginTop: 8 }}>
+                {Object.keys(platformSales).map(plat => (
+                  <span key={plat}><span className="dot" style={{ background: platformColors[plat] || '#888' }} />{plat.toUpperCase()}</span>
                 ))}
               </div>
             </div>
@@ -723,15 +749,15 @@ export default function Dashboard() {
             <h2>売上内訳</h2>
             <div className="bar">
               <div style={{ background: 'var(--ok)', width: netPct + '%' }}>
-                {netPct > 12 && m ? `利益 ${yen(m.net)}` : ''}
+                {netPct > 12 ? `利益 ${yen(periodNet)}` : ''}
               </div>
               <div style={{ background: 'var(--danger)', width: feePct + '%' }}>
-                {feePct > 12 && m ? `手数料 ${yen(m.fee)}` : ''}
+                {feePct > 12 ? `手数料 ${yen(periodFee)}` : ''}
               </div>
             </div>
             <div className="legend">
-              <span><span className="dot" style={{ background: 'var(--ok)' }} />利益 {pct(netPct / 100)}</span>
-              <span><span className="dot" style={{ background: 'var(--danger)' }} />手数料 {pct(feePct / 100)}</span>
+              <span><span className="dot" style={{ background: 'var(--ok)' }} />利益 {yen(periodNet)} ({pct(netPct / 100)})</span>
+              <span><span className="dot" style={{ background: 'var(--danger)' }} />手数料 {yen(periodFee)} ({pct(feePct / 100)})</span>
             </div>
           </div>
         </section>
@@ -740,9 +766,17 @@ export default function Dashboard() {
       {/* ===== Platforms ===== */}
       {activeTab === 'platforms' && (
         <section>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            {([['7', '7日'], ['30', '30日'], ['month', '月'], ['year', '年']] as [Period, string][]).map(([p, label]) => (
+              <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>
+                {label}
+              </button>
+            ))}
+          </div>
+
           <div className="platform-grid">
-            {m?.platforms.length === 0 && <div className="card">プラットフォームデータなし</div>}
-            {m?.platforms.map(p => (
+            {filteredPlatforms.length === 0 && <div className="card">プラットフォームデータなし</div>}
+            {filteredPlatforms.sort((a, b) => b.gross - a.gross).map(p => (
               <div key={p.platform} className="card">
                 <div className="label">{p.platform.toUpperCase()}</div>
                 <div className="mini-grid">
@@ -752,23 +786,23 @@ export default function Dashboard() {
                 </div>
                 <div className="mini-grid">
                   <div className="mini"><div className="label">手数料率</div><div className={`value small${p.fee_rate > 0.33 ? ' danger' : ''}`}>{pct(p.fee_rate)}</div></div>
-                  <div className="mini"><div className="label">cancel率</div><div className={`value small${p.cancel_rate > 0.1 ? ' danger' : ''}`}>{pct(p.cancel_rate)}</div></div>
+                  <div className="mini"><div className="label">手数料</div><div className="value small danger">{yen(p.fee)}</div></div>
                   <div className="mini"><div className="label">依存率</div><div className={`value small${p.dependency > 0.45 ? ' danger' : ''}`}>{pct(p.dependency)}</div></div>
                 </div>
               </div>
             ))}
           </div>
 
-          {dates.length > 0 && (
+          {filteredDates.length > 0 && (
             <div style={{ marginTop: 24 }}>
               <h2 style={{ marginBottom: 12 }}>日別集計</h2>
-              {dates.map((date, i) => {
-                const rows       = m!.byDate[date];
+              {filteredDates.map((date, i) => {
+                const rows       = filteredByDate[date];
                 const totalSales = rows.reduce((a, r) => a + Number(r.sales || 0), 0);
                 const totalFee   = rows.reduce((a, r) => a + Number(r.fee || 0), 0);
                 const totalNet   = totalSales - totalFee;
-                const prevDate   = dates[i + 1];
-                const prevRows   = prevDate ? m!.byDate[prevDate] : null;
+                const prevDate   = filteredDates[i + 1];
+                const prevRows   = prevDate ? filteredByDate[prevDate] : null;
                 const prevSalesD = prevRows ? prevRows.reduce((a, r) => a + Number(r.sales || 0), 0) : null;
                 const prevNetD   = prevRows ? prevRows.reduce((a, r) => a + (r.sales - r.fee), 0) : null;
                 const diffSales  = prevSalesD !== null ? totalSales - prevSalesD : null;
