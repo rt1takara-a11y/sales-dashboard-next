@@ -85,6 +85,39 @@ function normalizePlatform(raw: string): string {
   return s || 'unknown';
 }
 
+// ---------- Uber Eats CSV → DailyRecord[] ----------
+function parseUberEatsCSV(text: string): DailyRecord[] {
+  const cleaned = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines   = cleaned.trim().split('\n').filter(l => l.trim());
+  if (lines.length < 2) throw new Error('データ行がありません');
+
+  const headers   = lines[0].split(',').map(h => h.trim());
+  const iStatus   = headers.findIndex(h => h.includes('注文状況'));
+  const iAmount   = headers.findIndex(h => h.includes('注文単価'));
+  const iDate     = headers.findIndex(h => h === '注文日');
+
+  if (iStatus < 0 || iAmount < 0 || iDate < 0)
+    throw new Error('Uber Eats CSVの列が見つかりません（注文状況・注文単価・注文日）');
+
+  const grouped: Record<string, DailyRecord> = {};
+  lines.slice(1).forEach(line => {
+    const cols   = line.split(',').map(v => v.trim());
+    if ((cols[iStatus] || '').toLowerCase() !== 'completed') return;
+    const date   = (cols[iDate] || '').slice(0, 10);
+    const amount = Math.round(Number((cols[iAmount] || '').replace(/[¥,]/g, '')) || 0);
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) return;
+    const key = `${date}__uber`;
+    if (!grouped[key]) grouped[key] = { date, platform: 'uber', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
+    grouped[key].orders += 1;
+    grouped[key].sales  += amount;
+    grouped[key].net    += amount;
+  });
+
+  const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
+  if (result.length === 0) throw new Error('completed ステータスの注文が見つかりませんでした');
+  return result;
+}
+
 // ---------- CSV → DailyRecord[] ----------
 function parseUploadCSV(text: string): DailyRecord[] {
   const cleaned = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -490,7 +523,10 @@ export default function Dashboard() {
     } else {
       reader.onload = ev => {
         try {
-          const records = parseUploadCSV(ev.target!.result as string);
+          const text      = ev.target!.result as string;
+          const firstLine = text.replace(/^\uFEFF/, '').split(/\r?\n/)[0] || '';
+          const isUber    = firstLine.includes('注文状況') || firstLine.includes('注文単価');
+          const records   = isUber ? parseUberEatsCSV(text) : parseUploadCSV(text);
           if (records.length === 0) throw new Error('有効な注文データが見つかりませんでした');
           finishUpload(records, file.name);
         } catch (e) {
