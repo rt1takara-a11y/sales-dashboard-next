@@ -124,10 +124,11 @@ function parseUploadCSV(text: string): DailyRecord[] {
   const lines   = cleaned.trim().split('\n').filter(l => l.trim());
   if (lines.length < 2) throw new Error('データ行がありません');
 
-  const headers  = lines[0].split(',').map(h => h.trim().toLowerCase());
-  const iDate    = headers.indexOf('date');
-  const iSales   = headers.indexOf('sales');
+  const headers   = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const iDate     = headers.indexOf('date');
+  const iSales    = headers.indexOf('sales');
   const iPlatform = headers.indexOf('platform');
+  const iFee      = headers.indexOf('fee'); // 任意列
 
   const missing = ['date', 'sales', 'platform'].filter(h => !headers.includes(h));
   if (missing.length > 0) throw new Error(`列が不足しています: ${missing.join(', ')}`);
@@ -140,6 +141,7 @@ function parseUploadCSV(text: string): DailyRecord[] {
     const salesRaw = (cols[iSales] || '').replace(/[¥,]/g, '').trim();
     const platform = normalizePlatform(cols[iPlatform] || '');
     const sales    = Math.round(Number(salesRaw) || 0);
+    const fee      = iFee >= 0 ? Math.round(Number((cols[iFee] || '').replace(/[¥,]/g, '')) || 0) : 0;
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
 
@@ -149,7 +151,8 @@ function parseUploadCSV(text: string): DailyRecord[] {
     }
     grouped[key].orders += 1;
     grouped[key].sales  += sales;
-    grouped[key].net    += sales;
+    grouped[key].fee    += fee;
+    grouped[key].net    += sales - fee;
   });
 
   return Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
@@ -933,21 +936,24 @@ export default function Dashboard() {
               1行＝1注文（または1会計）。ヘッダー行必須。
             </div>
             <pre style={{ background: '#f5f3ef', padding: '12px 16px', borderRadius: 8, fontSize: 12, overflowX: 'auto', lineHeight: 1.7 }}>
-{`date,sales,platform,item
-2026-04-15,2330,uber,海鮮ドゥブ
-2026-04-15,1780,uber,豚キムチドゥブ
-2026-04-15,3200,square,海老ドゥブ
-2026-04-15,2860,rocket,NEW海老ドゥブ
-2026-04-15,1500,店内,スンドゥブ`}
+{`date,sales,fee,platform,item
+2026-04-15,2330,583,rocket,NEW海老ドゥブ
+2026-04-15,1780,445,rocket,豚キムチドゥブ
+2026-04-15,3200,0,square,海老ドゥブ
+2026-04-15,2720,0,uber,海鮮ドゥブ`}
             </pre>
             <table style={{ marginTop: 12 }}>
               <tbody>
                 <tr><th>date</th><td>日付（YYYY-MM-DD）</td></tr>
                 <tr><th>sales</th><td>注文金額（税込・円）</td></tr>
+                <tr><th>fee</th><td>手数料（円）※任意。省略可</td></tr>
                 <tr><th>platform</th><td>uber / rocket / square / 店内 など自由記述</td></tr>
                 <tr><th>item</th><td>商品名またはカテゴリ（集計には使わない）</td></tr>
               </tbody>
             </table>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10 }}>
+              ※ fee 列がない場合は手数料 ¥0 として扱われます。RocketNOW の Excel は手数料を自動取得します。
+            </div>
           </div>
         </section>
       )}
