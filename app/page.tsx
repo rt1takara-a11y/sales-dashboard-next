@@ -99,6 +99,7 @@ function parseUberEatsCSV(text: string): DailyRecord[] {
   if (iStatus < 0 || iAmount < 0 || iDate < 0)
     throw new Error('Uber Eats CSVの列が見つかりません（注文状況・注文単価・注文日）');
 
+  const UBER_FEE_RATE = 0.35 * 1.1; // 35% + 消費税10%
   const grouped: Record<string, DailyRecord> = {};
   lines.slice(1).forEach(line => {
     const cols   = line.split(',').map(v => v.trim());
@@ -106,11 +107,13 @@ function parseUberEatsCSV(text: string): DailyRecord[] {
     const date   = (cols[iDate] || '').slice(0, 10);
     const amount = Math.round(Number((cols[iAmount] || '').replace(/[¥,]/g, '')) || 0);
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) return;
+    const fee = Math.round(amount * UBER_FEE_RATE);
     const key = `${date}__uber`;
     if (!grouped[key]) grouped[key] = { date, platform: 'uber', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
     grouped[key].orders += 1;
     grouped[key].sales  += amount;
-    grouped[key].net    += amount;
+    grouped[key].fee    += fee;
+    grouped[key].net    += amount - fee;
   });
 
   const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
@@ -207,6 +210,7 @@ function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
   const iAmount = headers.findIndex(h => h.includes('注文単価'));
   const iUberDate = headers.findIndex(h => h === '注文日');
   if (iStatus >= 0 && iAmount >= 0 && iUberDate >= 0) {
+    const UBER_FEE_RATE = 0.35 * 1.1; // 35% + 消費税10%
     const grouped: Record<string, DailyRecord> = {};
     rows.slice(headerIdx + 1).forEach(row => {
       const r      = row as unknown[];
@@ -214,11 +218,13 @@ function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
       const date   = String(r[iUberDate] || '').slice(0, 10);
       const amount = Math.round(Number(String(r[iAmount] || '').replace(/[¥,]/g, '')) || 0);
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) return;
+      const fee = Math.round(amount * UBER_FEE_RATE);
       const key = `${date}__uber`;
       if (!grouped[key]) grouped[key] = { date, platform: 'uber', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
       grouped[key].orders += 1;
       grouped[key].sales  += amount;
-      grouped[key].net    += amount;
+      grouped[key].fee    += fee;
+      grouped[key].net    += amount - fee;
     });
     const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
     if (result.length > 0) return result;
