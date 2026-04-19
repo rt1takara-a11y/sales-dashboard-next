@@ -685,17 +685,17 @@ export default function Dashboard() {
             <div className="card">
               <div className="label">手数料</div>
               <div className="value danger">{yen(periodFee)}</div>
-              <div className="meta">fee_total</div>
+              <div className="meta" style={{ color: 'var(--danger)' }}>{pct(feePct / 100)} of 売上</div>
             </div>
             <div className="card">
-              <div className="label">利益</div>
+              <div className="label">利益（手取り）</div>
               <div className="value ok">{yen(periodNet)}</div>
-              <div className="meta">net_total</div>
+              <div className="meta" style={{ color: 'var(--ok)' }}>{pct(netPct / 100)} of 売上</div>
             </div>
             <div className="card">
               <div className="label">注文数</div>
               <div className="value">{periodOrders.toLocaleString('ja-JP')}</div>
-              <div className="meta">orders</div>
+              <div className="meta">平均 {periodOrders > 0 ? yen(Math.round(periodSales / periodOrders)) : '—'}/件</div>
             </div>
           </div>
 
@@ -725,48 +725,75 @@ export default function Dashboard() {
             </div>
           )}
 
-          {Object.keys(platformSales).length > 0 && (
+          {filteredPlatforms.length > 0 && (
             <div className="section">
               <h2>Platform内訳</h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {Object.entries(platformSales).sort((a, b) => b[1] - a[1]).map(([plat, sales]) => {
-                  const ratio = periodSales > 0 ? Math.round((sales / periodSales) * 100) : 0;
-                  const color = platformColors[plat] || '#888';
-                  return (
-                    <div key={plat} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
-                      <span style={{ width: 90, color, fontWeight: 600, flexShrink: 0 }}>{plat.toUpperCase()}</span>
-                      <div style={{ flex: 1, background: '#e6e0d3', borderRadius: 4, height: 18, overflow: 'hidden' }}>
-                        <div style={{ width: `${ratio}%`, height: '100%', background: color, borderRadius: 4 }} />
-                      </div>
-                      <span style={{ width: 80, textAlign: 'right', flexShrink: 0 }}>{ratio}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="legend" style={{ marginTop: 12 }}>
-                {Object.entries(platformSales).map(([plat]) => (
-                  <span key={plat}>
-                    <span className="dot" style={{ background: platformColors[plat] || '#888' }} />
-                    {plat.toUpperCase()} {yen(platformSales[plat])}
-                  </span>
-                ))}
-              </div>
+              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ color: 'var(--muted)', borderBottom: '1px solid #e0d8cc' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 500 }}>媒体</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>売上</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500, color: 'var(--danger)' }}>手数料</th>
+                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500, color: 'var(--ok)' }}>利益</th>
+                    <th style={{ textAlign: 'right', padding: '4px 0', fontWeight: 500 }}>構成比</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPlatforms.sort((a, b) => b.gross - a.gross).map(p => {
+                    const color = platformColors[p.platform] || '#888';
+                    const ratio = periodSales > 0 ? Math.round((p.gross / periodSales) * 100) : 0;
+                    return (
+                      <tr key={p.platform} style={{ borderBottom: '1px solid #f0ebe3' }}>
+                        <td style={{ padding: '8px 0', fontWeight: 600, color }}>
+                          <span className="dot" style={{ background: color }} />
+                          {p.platform.toUpperCase()}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '8px 8px' }}>{yen(p.gross)}</td>
+                        <td style={{ textAlign: 'right', padding: '8px 8px', color: p.fee > 0 ? 'var(--danger)' : 'var(--muted)' }}>
+                          {yen(p.fee)}{p.fee > 0 && <span style={{ fontSize: 11, marginLeft: 4 }}>({pct(p.fee_rate)})</span>}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '8px 8px', color: 'var(--ok)', fontWeight: 600 }}>{yen(p.net)}</td>
+                        <td style={{ textAlign: 'right', padding: '8px 0', color: 'var(--muted)' }}>{ratio}%</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: '2px solid #ccc', fontWeight: 600 }}>
+                    <td style={{ padding: '8px 0' }}>合計</td>
+                    <td style={{ textAlign: 'right', padding: '8px 8px' }}>{yen(periodSales)}</td>
+                    <td style={{ textAlign: 'right', padding: '8px 8px', color: 'var(--danger)' }}>{yen(periodFee)}</td>
+                    <td style={{ textAlign: 'right', padding: '8px 8px', color: 'var(--ok)' }}>{yen(periodNet)}</td>
+                    <td style={{ textAlign: 'right', padding: '8px 0', color: 'var(--muted)' }}>100%</td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
           )}
 
           <div className="section">
-            <h2>売上内訳</h2>
+            <h2>利益の内訳</h2>
             <div className="bar">
               <div style={{ background: 'var(--ok)', width: netPct + '%' }}>
-                {netPct > 12 ? `利益 ${yen(periodNet)}` : ''}
+                {netPct > 15 ? `利益 ${pct(netPct / 100)}` : ''}
               </div>
               <div style={{ background: 'var(--danger)', width: feePct + '%' }}>
-                {feePct > 12 ? `手数料 ${yen(periodFee)}` : ''}
+                {feePct > 10 ? `手数料 ${pct(feePct / 100)}` : ''}
               </div>
             </div>
-            <div className="legend">
-              <span><span className="dot" style={{ background: 'var(--ok)' }} />利益 {yen(periodNet)} ({pct(netPct / 100)})</span>
-              <span><span className="dot" style={{ background: 'var(--danger)' }} />手数料 {yen(periodFee)} ({pct(feePct / 100)})</span>
+            <div style={{ display: 'flex', gap: 24, marginTop: 12, fontSize: 13 }}>
+              <div>
+                <span className="dot" style={{ background: 'var(--ok)' }} />
+                <span style={{ color: 'var(--muted)' }}>手取り利益</span>
+                <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--ok)', marginTop: 2 }}>{yen(periodNet)}</div>
+                <div style={{ color: 'var(--muted)', fontSize: 12 }}>{pct(netPct / 100)} of 売上</div>
+              </div>
+              <div>
+                <span className="dot" style={{ background: 'var(--danger)' }} />
+                <span style={{ color: 'var(--muted)' }}>手数料合計</span>
+                <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--danger)', marginTop: 2 }}>{yen(periodFee)}</div>
+                <div style={{ color: 'var(--muted)', fontSize: 12 }}>{pct(feePct / 100)} of 売上</div>
+              </div>
             </div>
           </div>
         </section>
