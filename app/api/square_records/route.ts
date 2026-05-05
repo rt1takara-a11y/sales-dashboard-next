@@ -41,6 +41,7 @@ export async function GET() {
 
     const json      = await res.json();
     const rawOrders = json.orders || [];
+    console.log('Square closed_at sample:', rawOrders[0]?.closed_at);
 
     const grouped: Record<string, { date: string; platform: string; store: string; sales: number; fee: number; orders: number }> = {};
     rawOrders.forEach((o: any) => {
