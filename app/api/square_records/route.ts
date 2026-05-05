@@ -5,9 +5,10 @@ const LOCATION_ID  = process.env.SQUARE_LOCATION_ID!;
 const SQUARE_API   = 'https://connect.squareup.com/v2/orders/search';
 
 function getBusinessDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  if (d.getHours() < 3) d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  // Square returns UTC → convert to JST (UTC+9) before date extraction
+  const jst = new Date(new Date(dateStr).getTime() + 9 * 60 * 60 * 1000);
+  if (jst.getUTCHours() < 3) jst.setUTCDate(jst.getUTCDate() - 1); // 深夜3時前は前日扱い
+  return jst.toISOString().slice(0, 10);
 }
 
 export async function GET() {
@@ -41,7 +42,6 @@ export async function GET() {
 
     const json      = await res.json();
     const rawOrders = json.orders || [];
-    console.log('Square closed_at sample:', rawOrders[0]?.closed_at);
 
     const grouped: Record<string, { date: string; platform: string; store: string; sales: number; fee: number; orders: number }> = {};
     rawOrders.forEach((o: any) => {
