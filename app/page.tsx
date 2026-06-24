@@ -85,6 +85,18 @@ function normalizePlatform(raw: string): string {
   return s || 'unknown';
 }
 
+// ---------- 手数料計算（共通） ----------
+function calcFee(platform: string, sales: number, rawFee?: number): { fee: number; net: number } {
+  let fee = 0;
+  if (rawFee !== undefined) {
+    fee = rawFee; // 明示的に渡された値を優先（RocketNOW Excel実績値など）
+  } else if (platform === 'uber') {
+    fee = Math.round(sales * 0.35 * 1.1); // 35% + 消費税10%
+  }
+  // square / unknown: fee = 0
+  return { fee, net: sales - fee };
+}
+
 // ---------- Uber Eats CSV → DailyRecord[] ----------
 function parseUberEatsCSV(text: string): DailyRecord[] {
   const cleaned = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -99,7 +111,6 @@ function parseUberEatsCSV(text: string): DailyRecord[] {
   if (iStatus < 0 || iAmount < 0 || iDate < 0)
     throw new Error('Uber Eats CSVの列が見つかりません（注文状況・注文単価・注文日）');
 
-  const UBER_FEE_RATE = 0.35 * 1.1; // 35% + 消費税10%
   const grouped: Record<string, DailyRecord> = {};
   lines.slice(1).forEach(line => {
     const cols   = line.split(',').map(v => v.trim());
@@ -107,13 +118,13 @@ function parseUberEatsCSV(text: string): DailyRecord[] {
     const date   = (cols[iDate] || '').slice(0, 10);
     const amount = Math.round(Number((cols[iAmount] || '').replace(/[¥,]/g, '')) || 0);
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) return;
-    const fee = Math.round(amount * UBER_FEE_RATE);
+    const { fee, net } = calcFee('uber', amount);
     const key = `${date}__uber`;
     if (!grouped[key]) grouped[key] = { date, platform: 'uber', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
     grouped[key].orders += 1;
     grouped[key].sales  += amount;
     grouped[key].fee    += fee;
-    grouped[key].net    += amount - fee;
+    grouped[key].net    += net;
   });
 
   const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
@@ -144,7 +155,8 @@ function parseUploadCSV(text: string): DailyRecord[] {
     const salesRaw = (cols[iSales] || '').replace(/[¥,]/g, '').trim();
     const platform = normalizePlatform(cols[iPlatform] || '');
     const sales    = Math.round(Number(salesRaw) || 0);
-    const fee      = iFee >= 0 ? Math.round(Number((cols[iFee] || '').replace(/[¥,]/g, '')) || 0) : 0;
+    const rawFee   = iFee >= 0 ? Math.round(Number((cols[iFee] || '').replace(/[¥,]/g, '')) || 0) : undefined;
+    const { fee, net } = calcFee(platform, sales, rawFee);
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
 
@@ -155,15 +167,26 @@ function parseUploadCSV(text: string): DailyRecord[] {
     grouped[key].orders += 1;
     grouped[key].sales  += sales;
     grouped[key].fee    += fee;
-    grouped[key].net    += sales - fee;
+    grouped[key].net    += net;
   });
 
   return Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
 }
 
+// ---------- Excelセル → YYYY-MM-DD（日付型セル・文字列セルの両方に対応） ----------
+function excelDateToStr(cell: unknown): string {
+  if (cell instanceof Date) {
+    const y = cell.getUTCFullYear();
+    const m = String(cell.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(cell.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return String(cell || '').slice(0, 10);
+}
+
 // ---------- Excel → DailyRecord[] ----------
 function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
-  const wb   = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+  const wb   = XLSX.read(new Uint8Array(buffer), { type: 'array', cellDates: true });
   const ws   = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown[][];
 
@@ -195,11 +218,13 @@ function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
       const platform = normalizePlatform(String(r[iPlatform] || ''));
       void iItem; // item は集計に使わない
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
+      const { fee, net } = calcFee(platform, sales);
       const key = `${date}__${platform}`;
       if (!grouped[key]) grouped[key] = { date, platform, store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
       grouped[key].orders += 1;
       grouped[key].sales  += sales;
-      grouped[key].net    += sales;
+      grouped[key].fee    += fee;
+      grouped[key].net    += net;
     });
     const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
     if (result.length > 0) return result;
@@ -210,7 +235,6 @@ function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
   const iAmount = headers.findIndex(h => h.includes('注文単価'));
   const iUberDate = headers.findIndex(h => h === '注文日');
   if (iStatus >= 0 && iAmount >= 0 && iUberDate >= 0) {
-    const UBER_FEE_RATE = 0.35 * 1.1; // 35% + 消費税10%
     const grouped: Record<string, DailyRecord> = {};
     rows.slice(headerIdx + 1).forEach(row => {
       const r      = row as unknown[];
@@ -218,38 +242,52 @@ function parseExcel(buffer: ArrayBuffer): DailyRecord[] {
       const date   = String(r[iUberDate] || '').slice(0, 10);
       const amount = Math.round(Number(String(r[iAmount] || '').replace(/[¥,]/g, '')) || 0);
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) return;
-      const fee = Math.round(amount * UBER_FEE_RATE);
+      const { fee, net } = calcFee('uber', amount);
       const key = `${date}__uber`;
       if (!grouped[key]) grouped[key] = { date, platform: 'uber', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
       grouped[key].orders += 1;
       grouped[key].sales  += amount;
       grouped[key].fee    += fee;
-      grouped[key].net    += amount - fee;
+      grouped[key].net    += net;
     });
     const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
     if (result.length > 0) return result;
   }
 
   // --- パターン③: RocketNOW Excel (取引日 / 売上高 / 取引タイプ) ---
-  const iRkDate  = headers.findIndex(h => h === '取引日');
-  const iRkSales = headers.findIndex(h => h === '売上高');
-  const iRkFee   = headers.findIndex(h => h === '総手数料');
-  const iRkType  = headers.findIndex(h => h === '取引タイプ');
+  const iRkDate    = headers.findIndex(h => h === '取引日');
+  const iRkSales   = headers.findIndex(h => h === '売上高');
+  const iRkFee     = headers.findIndex(h => h === '総手数料');
+  const iRkTax     = headers.findIndex(h => h === '消費税');
+  const iRkSettle  = headers.findIndex(h => h === '精算予定金額');
+  const iRkType    = headers.findIndex(h => h === '取引タイプ');
   if (iRkDate >= 0 && iRkSales >= 0 && iRkType >= 0) {
     const grouped: Record<string, DailyRecord> = {};
     rows.slice(headerIdx + 1).forEach(row => {
       const r = row as unknown[];
       if (String(r[iRkType] || '') !== 'PAY') return;
-      const date  = String(r[iRkDate] || '').slice(0, 10);
+      const date  = excelDateToStr(r[iRkDate]);
       const sales = Math.round(Number(r[iRkSales] || 0));
-      const fee   = iRkFee >= 0 ? Math.round(Number(r[iRkFee] || 0)) : 0;
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || sales <= 0) return;
+
+      // 精算予定金額（=実際の入金額）があれば最優先。なければ 総手数料+消費税 で代用
+      let fee: number;
+      let net: number;
+      if (iRkSettle >= 0) {
+        net = Math.round(Number(r[iRkSettle] || 0));
+        fee = sales - net;
+      } else {
+        const baseFee = iRkFee >= 0 ? Math.round(Number(r[iRkFee] || 0)) : 0;
+        const tax     = iRkTax >= 0 ? Math.round(Number(r[iRkTax] || 0)) : 0;
+        ({ fee, net } = calcFee('rocketnow', sales, baseFee + tax));
+      }
+
       const key = `${date}__rocketnow`;
       if (!grouped[key]) grouped[key] = { date, platform: 'rocketnow', store: 'nakameguro', orders: 0, sales: 0, fee: 0, net: 0 };
       grouped[key].orders += 1;
       grouped[key].sales  += sales;
       grouped[key].fee    += fee;
-      grouped[key].net    += sales - fee;
+      grouped[key].net    += net;
     });
     const result = Object.values(grouped).sort((a, b) => b.date.localeCompare(a.date));
     if (result.length > 0) return result;
