@@ -14,18 +14,14 @@ function getBusinessDate(dateStr: string): string {
 export async function GET() {
   try {
     const end   = new Date();
-    const start = new Date();
-    start.setDate(start.getDate() - 365); // 過去1年分
-    start.setHours(0, 0, 0, 0);
+    const start = new Date('2026-01-01T00:00:00+09:00'); // 2026年1月1日 JST 固定
 
-    const res = await fetch(SQUARE_API, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${ACCESS_TOKEN}`,
-        'Content-Type':  'application/json',
-        'Square-Version': '2024-01-18',
-      },
-      body: JSON.stringify({
+    const grouped: Record<string, { date: string; platform: string; store: string; sales: number; fee: number; orders: number }> = {};
+
+    let cursor: string | undefined;
+    let pageCount = 0;
+    do {
+      const body: Record<string, unknown> = {
         location_ids: [LOCATION_ID],
         query: {
           filter: {
@@ -35,23 +31,40 @@ export async function GET() {
           sort: { sort_field: 'CLOSED_AT', sort_order: 'DESC' },
         },
         limit: 500,
-      }),
-    });
+      };
+      if (cursor) body.cursor = cursor;
 
-    if (!res.ok) return NextResponse.json({ records: [] });
+      const res = await fetch(SQUARE_API, {
+        method: 'POST',
+        headers: {
+          'Authorization':  `Bearer ${ACCESS_TOKEN}`,
+          'Content-Type':   'application/json',
+          'Square-Version': '2024-01-18',
+        },
+        body: JSON.stringify(body),
+      });
 
-    const json      = await res.json();
-    const rawOrders = json.orders || [];
+      if (!res.ok) break;
 
-    const grouped: Record<string, { date: string; platform: string; store: string; sales: number; fee: number; orders: number }> = {};
-    rawOrders.forEach((o: any) => {
-      const date  = getBusinessDate(o.closed_at || o.created_at);
-      const key   = `${date}_square`;
-      const gross = Math.round((o.total_money?.amount || 0) - (o.total_tax_money?.amount || 0));
-      if (!grouped[key]) grouped[key] = { date, platform: 'square', store: 'nakameguro', sales: 0, fee: 0, orders: 0 };
-      grouped[key].sales  += gross;
-      grouped[key].orders += 1;
-    });
+      const json      = await res.json();
+      const rawOrders = json.orders || [];
+      cursor = json.cursor as string | undefined;
+      pageCount++;
+
+      rawOrders.forEach((o: Record<string, unknown>) => {
+        const closed = (o.closed_at || o.created_at) as string;
+        const date  = getBusinessDate(closed);
+        const key   = `${date}_square`;
+        const money = o.total_money as { amount?: number } | undefined;
+        const tax   = o.total_tax_money as { amount?: number } | undefined;
+        const gross = Math.round((money?.amount || 0) - (tax?.amount || 0));
+        if (!grouped[key]) grouped[key] = { date, platform: 'square', store: 'nakameguro', sales: 0, fee: 0, orders: 0 };
+        grouped[key].sales  += gross;
+        grouped[key].orders += 1;
+      });
+
+      if (pageCount >= 20) break; // 安全上限（10,000件）
+    } while (cursor);
 
     const records = Object.values(grouped)
       .map(r => ({ ...r, net: r.sales - r.fee, avg_7d: null, diff_prev: null }))
