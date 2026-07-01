@@ -474,20 +474,27 @@ export default function Dashboard() {
   // localStorage から復元
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('csv_records');
-      const info  = localStorage.getItem('csv_upload_info');
+      const saved       = localStorage.getItem('csv_records');
+      const info        = localStorage.getItem('csv_upload_info');
+      const savedPeriod = localStorage.getItem('dashboard_period') as Period | null;
       if (saved) {
         const records = JSON.parse(saved) as DailyRecord[];
         uploadedRef.current = records;
         setUploadedRecordsState(records);
       }
       if (info) setUploadInfoState(JSON.parse(info));
+      if (savedPeriod && ['7', '30', 'month', 'year'].includes(savedPeriod)) setPeriod(savedPeriod);
     } catch { /* ignore */ }
   }, []);
 
   function setUploadedRecords(records: DailyRecord[]) {
     uploadedRef.current = records;
     setUploadedRecordsState(records);
+  }
+
+  function changePeriod(p: Period) {
+    setPeriod(p);
+    localStorage.setItem('dashboard_period', p);
   }
 
   // Square API から取得 → CSV データとマージ
@@ -548,6 +555,13 @@ export default function Dashboard() {
     setUploadInfoState(info);
     localStorage.setItem('csv_records',     JSON.stringify(merged));
     localStorage.setItem('csv_upload_info', JSON.stringify(info));
+
+    // 最古データが期間フィルター外にならないよう自動拡張
+    const today = new Date().toISOString().slice(0, 10);
+    const daysFromOldest = Math.floor((new Date(today).getTime() - new Date(dates[0]).getTime()) / 86400000);
+    if (daysFromOldest >= 30) changePeriod('year');
+    else if (daysFromOldest >= 7) changePeriod('30');
+
     loadData();
   }
 
@@ -702,7 +716,7 @@ export default function Dashboard() {
         <section>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             {([['7', '7日'], ['30', '30日'], ['month', '月'], ['year', '年']] as [Period, string][]).map(([p, label]) => (
-              <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>
+              <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => changePeriod(p)}>
                 {label}
               </button>
             ))}
@@ -842,7 +856,7 @@ export default function Dashboard() {
         <section>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             {([['7', '7日'], ['30', '30日'], ['month', '月'], ['year', '年']] as [Period, string][]).map(([p, label]) => (
-              <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => setPeriod(p)}>
+              <button key={p} className={`tab${period === p ? ' active' : ''}`} onClick={() => changePeriod(p)}>
                 {label}
               </button>
             ))}
