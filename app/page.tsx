@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 
 const SQUARE_URL = '/api/square_records';
-const BUSINESS_PULSE_URL = '/api/business-pulse';
 
 // ---------- ヘルパー ----------
 function yen(v: number) {
@@ -75,36 +74,6 @@ interface UploadInfo {
   dateMax: string;
   platforms: string[];
   uploadedAt: string;
-}
-
-interface BusinessPulsePlatformBreakdown {
-  platform: string;
-  orders: number | null;
-  sales: number | null;
-  basis: 'TAX_INCLUSIVE' | 'PLATFORM_REPORTED_GROSS' | null;
-  source: string;
-  state: 'OK' | 'UNAVAILABLE';
-  detail?: string;
-}
-
-interface BusinessPulseData {
-  period: {
-    start: string;
-    end: string;
-    boundary: string;
-  };
-  fetched_at: string;
-  state: 'OK' | 'OPERATIONAL_ADMITTED' | 'INCOMPLETE';
-  orders: number | null;
-  sales: number | null;
-  basis: 'TAX_INCLUSIVE' | 'PLATFORM_REPORTED_GROSS' | 'MIXED' | null;
-  basis_detail: Record<string, 'TAX_INCLUSIVE' | 'PLATFORM_REPORTED_GROSS'>;
-  platform_breakdown: BusinessPulsePlatformBreakdown[];
-  holds: {
-    fee_net: 'HOLD';
-    accounting_truth: 'HOLD';
-  };
-  unavailable: string[];
 }
 
 // ---------- platform 正規化 ----------
@@ -499,9 +468,6 @@ export default function Dashboard() {
   const [uploadInfo, setUploadInfoState]           = useState<UploadInfo | null>(null);
   const [uploadError, setUploadError] = useState('');
   const [dragOver, setDragOver]       = useState(false);
-  const [businessPulse, setBusinessPulse] = useState<BusinessPulseData | null>(null);
-  const [businessPulseHttpStatus, setBusinessPulseHttpStatus] = useState<number | null>(null);
-  const [businessPulseError, setBusinessPulseError] = useState('');
   const uploadedRef = useRef<DailyRecord[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -531,57 +497,16 @@ export default function Dashboard() {
     localStorage.setItem('dashboard_period', p);
   }
 
-  function isCompleteBusinessPulse(data: BusinessPulseData | null): boolean {
-    return !!data
-      && data.state === 'OPERATIONAL_ADMITTED'
-      && data.unavailable.length === 0
-      && typeof data.orders === 'number'
-      && typeof data.sales === 'number'
-      && typeof data.fetched_at === 'string'
-      && typeof data.period?.start === 'string'
-      && typeof data.period?.end === 'string'
-      && typeof data.period?.boundary === 'string'
-      && typeof data.basis === 'string'
-      && data.platform_breakdown.every(item => item.state === 'OK' && item.orders !== null && item.sales !== null);
-  }
-
   // Square API から取得 → CSV データとマージ
   const loadData = useCallback(async () => {
     setError('');
     setLoading(true);
     setUpdatedAt('更新中...');
-    setBusinessPulseError('');
     try {
-      const [squareResult, pulseResult] = await Promise.allSettled([
-        fetch(SQUARE_URL, { cache: 'no-store' }),
-        fetch(BUSINESS_PULSE_URL, { cache: 'no-store' }),
-      ]);
-
-      const res = squareResult.status === 'fulfilled' ? squareResult.value : null;
-      const squareRecords: DailyRecord[] = res?.ok
+      const res = await fetch(SQUARE_URL, { cache: 'no-store' });
+      const squareRecords: DailyRecord[] = res.ok
         ? ((await res.json()).records || [])
         : [];
-
-      if (pulseResult.status === 'fulfilled') {
-        const pulseResponse = pulseResult.value;
-        setBusinessPulseHttpStatus(pulseResponse.status);
-        try {
-          const pulseJson = (await pulseResponse.json()) as BusinessPulseData;
-          setBusinessPulse(pulseJson);
-          if (!pulseResponse.ok) {
-            setBusinessPulseError(`HTTP ${pulseResponse.status}`);
-          } else if (!isCompleteBusinessPulse(pulseJson)) {
-            setBusinessPulseError('不完全状態');
-          }
-        } catch (e) {
-          setBusinessPulse(null);
-          setBusinessPulseError('JSON 取得失敗: ' + (e instanceof Error ? e.message : String(e)));
-        }
-      } else {
-        setBusinessPulseHttpStatus(null);
-        setBusinessPulse(null);
-        setBusinessPulseError('取得失敗: ' + String(pulseResult.reason));
-      }
 
       const uploaded    = uploadedRef.current;
       const uploadedKeys = new Set(uploaded.map(r => `${r.date}__${r.platform}`));
@@ -745,14 +670,11 @@ export default function Dashboard() {
 
   const netPct = periodSales ? Math.max(0, (periodNet / periodSales) * 100) : 0;
   const feePct = periodSales ? Math.max(0, (periodFee / periodSales) * 100) : 0;
-  const businessPulseIsComplete = isCompleteBusinessPulse(businessPulse);
-  const businessPulseUnavailable = businessPulse?.unavailable ?? [];
 
   const TABS = [
     { id: 'overview',  label: 'Overview'  },
     { id: 'platforms', label: 'Platforms' },
     { id: 'alerts',    label: 'Alerts'    },
-    { id: 'business-pulse', label: 'Business Pulse' },
     { id: 'upload',    label: `アップロード${uploadedRecords.length > 0 ? ' ●' : ''}` },
   ];
 
@@ -788,88 +710,6 @@ export default function Dashboard() {
 
       {/* エラー */}
       {error && <div className="section" style={{ color: 'var(--danger)' }}>{error}</div>}
-
-      {/* ===== Business Pulse ===== */}
-      {activeTab === 'business-pulse' && (
-        <section>
-          <div className="grid">
-            <div className="card">
-              <div className="label">状態</div>
-              <div className="value" style={{ color: businessPulseIsComplete ? 'var(--ok)' : 'var(--danger)' }}>
-                {businessPulse ? businessPulse.state : '未取得'}
-              </div>
-              <div className="meta" style={{ marginTop: 6 }}>
-                {businessPulseHttpStatus !== null ? `HTTP ${businessPulseHttpStatus}` : 'HTTP --'}
-              </div>
-            </div>
-            <div className="card">
-              <div className="label">合計</div>
-              <div className={`value ${businessPulseIsComplete ? 'ok' : 'danger'}`}>
-                {businessPulseIsComplete && businessPulse ? `${businessPulse.orders?.toLocaleString('ja-JP')}件 / ${yen(businessPulse.sales || 0)}` : '不完全状態'}
-              </div>
-              <div className="meta" style={{ marginTop: 6 }}>
-                {businessPulse?.basis ?? 'basis --'}
-              </div>
-            </div>
-            <div className="card">
-              <div className="label">期間</div>
-              <div className="value small">{businessPulse?.period ? `${businessPulse.period.start} 〜 ${businessPulse.period.end}` : '—'}</div>
-              <div className="meta" style={{ marginTop: 6 }}>{businessPulse?.period?.boundary ?? 'boundary --'}</div>
-            </div>
-            <div className="card">
-              <div className="label">fetched_at</div>
-              <div className="value small">{businessPulse?.fetched_at ?? '—'}</div>
-              <div className="meta" style={{ marginTop: 6 }}>
-                fee_net: {businessPulse?.holds?.fee_net ?? 'HOLD'} / accounting_truth: {businessPulse?.holds?.accounting_truth ?? 'HOLD'}
-              </div>
-            </div>
-          </div>
-
-          {(businessPulseError || !businessPulseIsComplete) && (
-            <div className="section" style={{ marginTop: 16, color: businessPulseIsComplete ? 'var(--muted)' : 'var(--danger)' }}>
-              {businessPulseError || '不完全状態'}
-              {!businessPulseIsComplete && businessPulseUnavailable.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>unavailable</div>
-                  <ul style={{ margin: 0, paddingLeft: 20 }}>
-                    {businessPulseUnavailable.map(item => <li key={item}>{item}</li>)}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-
-          {businessPulse && (
-            <div className="section" style={{ marginTop: 16 }}>
-              <h2>platform breakdown</h2>
-              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ color: 'var(--muted)', borderBottom: '1px solid #e0d8cc' }}>
-                    <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 500 }}>platform</th>
-                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>orders</th>
-                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>sales</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>basis</th>
-                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>state</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {businessPulse.platform_breakdown.map(row => (
-                    <tr key={row.platform} style={{ borderBottom: '1px solid #f0ebe3' }}>
-                      <td style={{ padding: '8px 0', fontWeight: 600 }}>{row.platform.toUpperCase()}</td>
-                      <td style={{ textAlign: 'right', padding: '8px 8px' }}>{row.orders === null ? '—' : row.orders.toLocaleString('ja-JP')}</td>
-                      <td style={{ textAlign: 'right', padding: '8px 8px' }}>{row.sales === null ? '—' : yen(row.sales)}</td>
-                      <td style={{ textAlign: 'left', padding: '8px 8px' }}>{row.basis ?? '—'}</td>
-                      <td style={{ textAlign: 'left', padding: '8px 8px', color: row.state === 'OK' ? 'var(--ok)' : 'var(--danger)' }}>
-                        {row.state}{row.detail ? ` / ${row.detail}` : ''}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      )}
 
       {/* ===== Overview ===== */}
       {activeTab === 'overview' && (
